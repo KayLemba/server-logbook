@@ -8,33 +8,21 @@ export function exportToCSV(entries, filename = 'server_logbook.csv') {
     'Purpose of Visit', 'Authorized By', 'Access Method', 'Equipment Handled',
     'Remarks', 'Escort Required', 'Has Signature', 'Created At'
   ];
-
   const rows = entries.map(e => [
-    e.date,
-    e.time_in,
-    e.time_out || '',
-    e.full_name,
-    e.organization,
-    e.purpose,
-    e.authorized_by,
-    e.access_method,
-    e.equipment_handled || '',
-    e.remarks || '',
+    e.date, e.time_in, e.time_out || '', e.full_name, e.organization,
+    e.purpose, e.authorized_by, e.access_method,
+    e.equipment_handled || '', e.remarks || '',
     e.escort_required ? 'Yes' : 'No',
     e.signature ? 'Yes' : 'No',
     new Date(e.created_at).toLocaleString(),
   ]);
-
-  const csvContent = [headers, ...rows]
-    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+  const csv = [headers, ...rows]
+    .map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
     .join('\n');
-
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -43,9 +31,7 @@ export function formatTime(timeStr) {
   if (!timeStr) return '-';
   const [h, m] = timeStr.split(':');
   const hour = parseInt(h, 10);
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  const h12 = hour % 12 || 12;
-  return `${h12}:${m} ${ampm}`;
+  return `${hour % 12 || 12}:${m} ${hour >= 12 ? 'PM' : 'AM'}`;
 }
 
 export function formatDate(dateStr) {
@@ -55,269 +41,304 @@ export function formatDate(dateStr) {
   });
 }
 
-// ── Date filter helper ─────────────────────────────────────────
+// ── Date filter ────────────────────────────────────────────────
 export function filterByDateRange(entries, from, to) {
   if (!from && !to) return entries;
   return entries.filter(e => {
-    const d = e.date;
-    if (from && d < from) return false;
-    if (to && d > to) return false;
+    if (from && e.date < from) return false;
+    if (to   && e.date > to)   return false;
     return true;
   });
 }
 
-// ── Helper: safely load a Base64 image ────────────────────────
-function loadImage(dataURL) {
-  return new Promise((resolve) => {
-    if (!dataURL) return resolve(null);
+// ── Load image from src ────────────────────────────────────────
+function loadImage(src) {
+  return new Promise(resolve => {
+    if (!src) return resolve(null);
     const img = new window.Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = dataURL;
+    img.onload  = () => resolve(img);
+    img.onerror = () => { console.warn('Logo load failed:', src?.slice(0,60)); resolve(null); };
+    img.src = src;
   });
 }
 
-// ── PDF Export ─────────────────────────────────────────────────
-export async function exportToPDF(entries, dateRange = null) {
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
+// ── Convert image to PNG data URL preserving transparency ─────
+// Use white background only for signature images (dark ink on white)
+// Use transparent-safe PNG for logo (keeps original colours)
+function toPng(img, whiteBg = false) {
+  try {
+    const c   = document.createElement('canvas');
+    c.width   = img.naturalWidth  || img.width  || 300;
+    c.height  = img.naturalHeight || img.height || 100;
+    const ctx = c.getContext('2d');
+    if (whiteBg) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+    }
+    ctx.drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  } catch (e) {
+    console.warn('toPng failed:', e);
+    return null;
+  }
+}
 
-  const drawHeader = (label) => {
-    doc.setFillColor(13, 17, 23);
-    doc.rect(0, 0, pageWidth, 28, 'F');
-    doc.setTextColor(255, 255, 255);
+// ── PDF Export ─────────────────────────────────────────────────
+export async function exportToPDF(entries, dateRange = null, logoSrc = null) {
+  const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+
+  const NAVY       = [13,  27,  60];
+  const BLUE       = [15,  76, 158];
+  const SILVER     = [148, 163, 184];
+  const WHITE      = [255, 255, 255];
+  const LIGHT_BG   = [248, 249, 251];
+  const BORDER_COL = [220, 225, 234];
+
+  // Load & convert logo — keep as PNG to preserve transparency
+  let logoPng = null;
+  if (logoSrc) {
+    const img = await loadImage(logoSrc);
+    if (img) {
+      // Render logo on a white background so it shows on dark header
+      const c   = document.createElement('canvas');
+      c.width   = img.naturalWidth  || img.width  || 300;
+      c.height  = img.naturalHeight || img.height || 100;
+      const ctx = c.getContext('2d');
+      // Dark navy background matching the PDF header
+      ctx.fillStyle = '#0d1b3c';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0);
+      logoPng = c.toDataURL('image/png');
+    }
+  }
+
+  // ── Page header ───────────────────────────────────────────────
+  const drawHeader = (title) => {
+    // Navy background
+    doc.setFillColor(...NAVY);
+    doc.rect(0, 0, pageW, 26, 'F');
+    // Blue accent bar
+    doc.setFillColor(...BLUE);
+    doc.rect(0, 24, pageW, 2, 'F');
+
+    // Logo top-left
+    if (logoPng) {
+      try {
+        doc.addImage(logoPng, 'PNG', 8, 3, 32, 16);
+      } catch (e) {
+        console.warn('addImage logo failed:', e);
+      }
+    }
+
+    const textX = logoPng ? 46 : 14;
+    doc.setTextColor(...WHITE);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('SERVER ROOM ACCESS LOGBOOK', 14, 12);
+    doc.setFontSize(13);
+    doc.text('SERVER ROOM ACCESS LOGBOOK', textX, 11);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(148, 163, 184);
-    const generatedOn = `Generated: ${new Date().toLocaleString()}`;
-    const rangeLabel = dateRange
-      ? `  |  Period: ${dateRange.from} to ${dateRange.to}`
-      : '  |  All Entries';
-    doc.text(generatedOn + rangeLabel, 14, 20);
-    doc.text(`${label} - ${entries.length} records`, pageWidth - 14, 20, { align: 'right' });
-    doc.setDrawColor(59, 130, 246);
-    doc.setLineWidth(1);
-    doc.line(0, 28, pageWidth, 28);
+    doc.setFontSize(7);
+    doc.setTextColor(...SILVER);
+    doc.text('Exponent Bizolution · Access Control & Audit System', textX, 17);
+
+    const meta = dateRange
+      ? `Period: ${dateRange.from}  to  ${dateRange.to}`
+      : `Generated: ${new Date().toLocaleString()}`;
+    doc.text(meta,                               pageW - 10, 11, { align: 'right' });
+    doc.text(`${title}  ·  ${entries.length} records`, pageW - 10, 17, { align: 'right' });
   };
 
-  const drawFooters = (startPage, endPage) => {
+  // ── Page footer ───────────────────────────────────────────────
+  const drawFooters = (startPg, endPg) => {
     const total = doc.internal.getNumberOfPages();
-    for (let i = startPage; i <= endPage; i++) {
+    for (let i = startPg; i <= endPg; i++) {
       doc.setPage(i);
-      doc.setFillColor(248, 249, 251);
-      doc.rect(0, pageHeight - 10, pageWidth, 10, 'F');
-      doc.setDrawColor(220, 225, 234);
+      doc.setFillColor(...LIGHT_BG);
+      doc.rect(0, pageH - 9, pageW, 9, 'F');
+      doc.setDrawColor(...BORDER_COL);
       doc.setLineWidth(0.3);
-      doc.line(0, pageHeight - 10, pageWidth, pageHeight - 10);
+      doc.line(0, pageH - 9, pageW, pageH - 9);
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7);
-      doc.setTextColor(138, 148, 166);
-      doc.text('CONFIDENTIAL - SERVER ROOM ACCESS LOG', 14, pageHeight - 4);
-      doc.text(`Page ${i} of ${total}`, pageWidth - 14, pageHeight - 4, { align: 'right' });
+      doc.setFontSize(6.5);
+      doc.setTextColor(120, 130, 148);
+      doc.text('CONFIDENTIAL  ·  SERVER ROOM ACCESS LOG  ·  EXPONENT BIZOLUTION', 10, pageH - 3.5);
+      doc.text(`Page ${i} of ${total}`, pageW - 10, pageH - 3.5, { align: 'right' });
     }
   };
 
-  // ── Access Log Table ──────────────────────────────────────────
+  // ── Access log table ──────────────────────────────────────────
   drawHeader('Access Log');
 
-  const columns = [
-    { header: '#',             dataKey: 'idx' },
-    { header: 'Date',          dataKey: 'date' },
-    { header: 'Time In',       dataKey: 'time_in' },
-    { header: 'Time Out',      dataKey: 'time_out' },
-    { header: 'Full Name',     dataKey: 'full_name' },
-    { header: 'Organization',  dataKey: 'organization' },
-    { header: 'Purpose',       dataKey: 'purpose' },
-    { header: 'Authorized By', dataKey: 'authorized_by' },
-    { header: 'Access Method', dataKey: 'access_method' },
-    { header: 'Equipment',     dataKey: 'equipment_handled' },
-    { header: 'Escort',        dataKey: 'escort_required' },
-    { header: 'Signed',        dataKey: 'has_sig' },
-    { header: 'Remarks',       dataKey: 'remarks' },
-  ];
-
-  const tableRows = entries.map((e, i) => ({
-    idx:               String(i + 1),
-    date:              e.date || '',
-    time_in:           e.time_in || '',
-    time_out:          e.time_out || '-',
-    full_name:         e.full_name || '',
-    organization:      e.organization || '',
-    purpose:           e.purpose || '',
-    authorized_by:     e.authorized_by || '',
-    access_method:     e.access_method || '',
-    equipment_handled: e.equipment_handled || '-',
-    escort_required:   e.escort_required ? 'Yes' : 'No',
-    has_sig:           e.signature ? 'Yes' : 'No',
-    remarks:           e.remarks || '-',
-  }));
-
-  // Use autoTable as a standalone function (not doc.autoTable)
   autoTable(doc, {
-    startY: 32,
-    columns,
-    body: tableRows,
+    startY: 30,
+    columns: [
+      { header: '#',             dataKey: 'idx'              },
+      { header: 'Date',          dataKey: 'date'             },
+      { header: 'Time In',       dataKey: 'time_in'          },
+      { header: 'Time Out',      dataKey: 'time_out'         },
+      { header: 'Full Name',     dataKey: 'full_name'        },
+      { header: 'Organization',  dataKey: 'organization'     },
+      { header: 'Purpose',       dataKey: 'purpose'          },
+      { header: 'Authorized By', dataKey: 'authorized_by'    },
+      { header: 'Access Method', dataKey: 'access_method'    },
+      { header: 'Equipment',     dataKey: 'equipment_handled'},
+      { header: 'Escort',        dataKey: 'escort_required'  },
+      { header: 'Signed',        dataKey: 'has_sig'          },
+      { header: 'Remarks',       dataKey: 'remarks'          },
+    ],
+    body: entries.map((e, i) => ({
+      idx:               String(i + 1),
+      date:              e.date              || '',
+      time_in:           e.time_in           || '',
+      time_out:          e.time_out          || '-',
+      full_name:         e.full_name         || '',
+      organization:      e.organization      || '',
+      purpose:           e.purpose           || '',
+      authorized_by:     e.authorized_by     || '',
+      access_method:     e.access_method     || '',
+      equipment_handled: e.equipment_handled || '-',
+      escort_required:   e.escort_required   ? 'Yes' : 'No',
+      has_sig:           e.signature         ? 'Yes' : 'No',
+      remarks:           e.remarks           || '-',
+    })),
     styles: {
-      font: 'helvetica',
-      fontSize: 7.5,
-      cellPadding: 3,
-      valign: 'middle',
-      textColor: [30, 30, 40],
-      lineColor: [220, 225, 234],
-      lineWidth: 0.3,
-      overflow: 'ellipsize',
+      font: 'helvetica', fontSize: 7.5, cellPadding: 3,
+      valign: 'middle', textColor: [30, 30, 40],
+      lineColor: BORDER_COL, lineWidth: 0.25, overflow: 'ellipsize',
     },
     headStyles: {
-      fillColor: [26, 86, 219],
-      textColor: [255, 255, 255],
-      fontStyle: 'bold',
-      fontSize: 7.5,
-      halign: 'left',
+      fillColor: BLUE, textColor: WHITE,
+      fontStyle: 'bold', fontSize: 7.5, halign: 'left',
     },
-    alternateRowStyles: { fillColor: [248, 249, 251] },
+    alternateRowStyles: { fillColor: LIGHT_BG },
     columnStyles: {
       idx:          { cellWidth: 8,  halign: 'center' },
       date:         { cellWidth: 22 },
       time_in:      { cellWidth: 16 },
       time_out:     { cellWidth: 16 },
-      full_name:    { cellWidth: 32, fontStyle: 'bold' },
-      organization: { cellWidth: 30 },
-      purpose:      { cellWidth: 28 },
-      has_sig:      { cellWidth: 14, halign: 'center' },
-      remarks:      { cellWidth: 28 },
+      full_name:    { cellWidth: 30, fontStyle: 'bold' },
+      organization: { cellWidth: 28 },
+      purpose:      { cellWidth: 26 },
+      has_sig:      { cellWidth: 13, halign: 'center' },
+      remarks:      { cellWidth: 26 },
     },
-    margin: { top: 32, left: 10, right: 10 },
+    margin: { top: 30, left: 10, right: 10 },
   });
 
-  const afterTablePage = doc.internal.getNumberOfPages();
-  drawFooters(1, afterTablePage);
+  drawFooters(1, doc.internal.getNumberOfPages());
 
-  // ── Signatures Annex ─────────────────────────────────────────
+  // ── Signatures annex ──────────────────────────────────────────
   const withSigs = entries.filter(e => e.signature);
-
   if (withSigs.length > 0) {
     const loaded = await Promise.all(withSigs.map(e => loadImage(e.signature)));
 
     doc.addPage();
-    const sigPageStart = doc.internal.getNumberOfPages();
+    const sigStart = doc.internal.getNumberOfPages();
 
     // Annex header
-    doc.setFillColor(13, 17, 23);
-    doc.rect(0, 0, pageWidth, 20, 'F');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.setTextColor(255, 255, 255);
-    doc.text('SIGNATURES ANNEX', 14, 13);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(148, 163, 184);
-    doc.text(`${withSigs.length} signatures captured`, pageWidth - 14, 13, { align: 'right' });
-    doc.setDrawColor(59, 130, 246);
-    doc.setLineWidth(0.8);
-    doc.line(0, 20, pageWidth, 20);
+    doc.setFillColor(...NAVY);
+    doc.rect(0, 0, pageW, 20, 'F');
+    doc.setFillColor(...BLUE);
+    doc.rect(0, 18, pageW, 2, 'F');
 
-    const cols = 4;
-    const cardW = (pageWidth - 24) / cols;
-    const cardH = 40;
-    const startY = 26;
-    const gap = 4;
-    const rowsPerPage = Math.floor((pageHeight - startY - 14) / (cardH + gap));
+    if (logoPng) {
+      try { doc.addImage(logoPng, 'PNG', 8, 2, 22, 11); } catch (e) {}
+    }
+
+    const sigTitleX = logoPng ? 36 : 14;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...WHITE);
+    doc.text('SIGNATURES ANNEX', sigTitleX, 10);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(...SILVER);
+    doc.text('Visitor signatures captured at time of entry', sigTitleX, 16);
+    doc.text(`${withSigs.length} signatures`, pageW - 10, 10, { align: 'right' });
+
+    // Cards grid
+    const cols      = 4;
+    const cardW     = (pageW - 24) / cols;
+    const cardH     = 42;
+    const startY    = 26;
+    const gap       = 4;
+    const rowsPerPg = Math.floor((pageH - startY - 12) / (cardH + gap));
 
     withSigs.forEach((entry, idx) => {
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const pageRow = row % rowsPerPage;
+      const col     = idx % cols;
+      const row     = Math.floor(idx / cols);
+      const pageRow = row % rowsPerPg;
 
       if (pageRow === 0 && idx !== 0 && col === 0) {
         doc.addPage();
-        doc.setFillColor(26, 86, 219);
-        doc.rect(0, 0, pageWidth, 8, 'F');
+        doc.setFillColor(...BLUE);
+        doc.rect(0, 0, pageW, 7, 'F');
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(7);
-        doc.setTextColor(255, 255, 255);
-        doc.text('SIGNATURES ANNEX (continued)', 14, 5.5);
+        doc.setFontSize(6.5);
+        doc.setTextColor(...WHITE);
+        doc.text('SIGNATURES ANNEX (continued)  ·  Exponent Bizolution', 10, 5);
       }
 
       const x = 10 + col * (cardW + gap);
       const y = startY + pageRow * (cardH + gap);
 
-      // Card
-      doc.setFillColor(248, 249, 251);
-      doc.setDrawColor(220, 225, 234);
+      // Card shell
+      doc.setFillColor(...LIGHT_BG);
+      doc.setDrawColor(...BORDER_COL);
       doc.setLineWidth(0.3);
-      doc.rect(x, y, cardW, cardH, 'FD');
+      doc.roundedRect(x, y, cardW, cardH, 2, 2, 'FD');
 
-      // Badge
-      doc.setFillColor(26, 86, 219);
-      doc.rect(x + 2, y + 2, 8, 5, 'F');
+      // Blue top bar
+      doc.setFillColor(...BLUE);
+      doc.roundedRect(x, y, cardW, 5, 2, 2, 'F');
+      doc.rect(x, y + 3, cardW, 2, 'F');
+
+      // Entry # and name
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.5);
-      doc.setTextColor(255, 255, 255);
-      doc.text(`#${entries.indexOf(entry) + 1}`, x + 3, y + 5.5);
-
-      // Name
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7);
-      doc.setTextColor(30, 30, 40);
-      const nameText = entry.full_name.length > 22
-        ? entry.full_name.slice(0, 20) + '...'
-        : entry.full_name;
-      doc.text(nameText, x + 12, y + 5.5);
+      doc.setTextColor(...WHITE);
+      doc.text(`#${entries.indexOf(entry) + 1}`, x + 3, y + 3.8);
+      const name = entry.full_name.length > 24
+        ? entry.full_name.slice(0, 22) + '...' : entry.full_name;
+      doc.text(name, x + 12, y + 3.8);
 
       // Org & date
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6);
-      doc.setTextColor(100, 100, 120);
-      const orgText = entry.organization.length > 26
-        ? entry.organization.slice(0, 24) + '...'
-        : entry.organization;
-      doc.text(orgText, x + 2, y + 11);
-      doc.text(`${entry.date}  -  ${entry.time_in}`, x + 2, y + 15);
+      doc.setTextColor(80, 95, 115);
+      const org = entry.organization.length > 28
+        ? entry.organization.slice(0, 26) + '...' : entry.organization;
+      doc.text(org, x + 2, y + 10);
+      doc.text(`${entry.date}  ·  ${entry.time_in}`, x + 2, y + 14.5);
 
-      // Signature box
-      const imgX = x + 2;
-      const imgY = y + 18;
-      const imgW = cardW - 4;
-      const imgH = cardH - 20;
+      // Separator
+      doc.setDrawColor(...BORDER_COL);
+      doc.setLineWidth(0.2);
+      doc.line(x + 2, y + 17, x + cardW - 2, y + 17);
 
+      // Signature image box
+      const imgX = x + 2, imgY = y + 19, imgW = cardW - 4, imgH = cardH - 21;
       doc.setFillColor(255, 255, 255);
-      doc.setDrawColor(200, 210, 220);
+      doc.setDrawColor(210, 220, 230);
       doc.rect(imgX, imgY, imgW, imgH, 'FD');
 
       const img = loaded[idx];
       if (img) {
         try {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.naturalWidth || img.width;
-          canvas.height = img.naturalHeight || img.height;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, 0, 0);
-          const jpeg = canvas.toDataURL('image/jpeg', 0.9);
-          doc.addImage(jpeg, 'JPEG', imgX + 1, imgY + 1, imgW - 2, imgH - 2);
-        } catch (imgErr) {
+          const sigPng = toPng(img, true); // white bg for signature ink
+          if (sigPng) doc.addImage(sigPng, 'PNG', imgX + 1, imgY + 1, imgW - 2, imgH - 2);
+        } catch {
           doc.setFont('helvetica', 'italic');
-          doc.setFontSize(6);
-          doc.setTextColor(160, 160, 160);
+          doc.setFontSize(5.5);
+          doc.setTextColor(160, 160, 170);
           doc.text('[signature on file]', imgX + imgW / 2, imgY + imgH / 2, { align: 'center' });
         }
-      } else {
-        doc.setFont('helvetica', 'italic');
-        doc.setFontSize(6);
-        doc.setTextColor(160, 160, 160);
-        doc.text('[no signature]', imgX + imgW / 2, imgY + imgH / 2, { align: 'center' });
       }
     });
 
-    const sigPageEnd = doc.internal.getNumberOfPages();
-    drawFooters(sigPageStart, sigPageEnd);
+    drawFooters(sigStart, doc.internal.getNumberOfPages());
   }
 
-  const dateTag = new Date().toISOString().split('T')[0];
-  doc.save(`server_logbook_${dateTag}.pdf`);
+  doc.save(`server_logbook_${new Date().toISOString().split('T')[0]}.pdf`);
 }

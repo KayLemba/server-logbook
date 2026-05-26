@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { exportToCSV, exportToPDF, filterByDateRange } from '../utils/exportUtils';
 import { IcoExport, IcoDownload, IcoFileText, IcoX, IcoCalendar } from './Icons';
+import logo from '../assets/logo.png';
 
 export default function ExportModal({ entries, onClose, addToast }) {
   const [from, setFrom] = useState('');
@@ -22,7 +23,7 @@ export default function ExportModal({ entries, onClose, addToast }) {
     if (!filtered.length) { addToast('No entries in selected range', 'error'); return; }
     setLoading('pdf');
     try {
-      await exportToPDF(filtered, from && to ? { from, to } : null);
+      await exportToPDF(filtered, from && to ? { from, to } : null, logo);
       addToast(`PDF exported — ${filtered.length} entries`, 'success');
       onClose();
     } catch (err) {
@@ -69,7 +70,9 @@ export default function ExportModal({ entries, onClose, addToast }) {
             <IcoDownload size={14} /> Export CSV
           </button>
           <button className="btn btn-primary" onClick={handlePDF} disabled={!!loading}>
-            {loading === 'pdf' ? <><span className="loading-spinner" /> Generating…</> : <><IcoFileText size={14} /> Export PDF</>}
+            {loading === 'pdf'
+              ? <><span className="loading-spinner" /> Generating…</>
+              : <><IcoFileText size={14} /> Export PDF</>}
           </button>
         </div>
       </div>
